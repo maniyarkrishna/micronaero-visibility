@@ -1,26 +1,20 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+html { scroll-behavior: smooth; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Inter', sans-serif; background: #f8fafc; }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-}
+@keyframes spin { to { transform: rotate(360deg); } }
+.spinner { animation: spin 0.8s linear infinite; }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
-}
+@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
+.cursor::after { content:'|'; animation: blink 1s step-end infinite; margin-left:1px; }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
-}
+.prose-content h1 { font-size:1.4rem;font-weight:800;margin:1rem 0 0.5rem;color:#0f172a; }
+.prose-content h2 { font-size:1.15rem;font-weight:700;margin:0.9rem 0 0.4rem;color:#1e293b;border-bottom:1px solid #e2e8f0;padding-bottom:3px; }
+.prose-content h3 { font-size:1rem;font-weight:700;margin:0.7rem 0 0.3rem;color:#334155; }
+.prose-content p  { margin-bottom:0.75rem;line-height:1.7; }
+.prose-content ul,.prose-content ol { margin:0.5rem 0 0.75rem 1.25rem; }
+.prose-content li { margin-bottom:0.25rem;line-height:1.6; }
+.prose-content strong { font-weight:700;color:#0f172a; }
+.prose-content code { background:#f1f5f9;padding:1px 5px;border-radius:4px;font-size:0.85em; }
+.prose-content pre  { background:#1e293b;color:#e2e8f0;padding:14px;border-radius:8px;overflow-x:auto;font-size:0.85rem;line-height:1.6;margin:0.75rem 0; }
