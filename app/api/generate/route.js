@@ -1,4 +1,4 @@
-import Anthropic from '@anthropic-ai/sdk';
+import { generateTemplateContent } from '@/lib/templates';
 
 export const dynamic = 'force-dynamic';
 
@@ -7,10 +7,57 @@ export async function POST(request) {
   if (!product || !contentType) {
     return Response.json({ error: 'product and contentType are required' }, { status: 400 });
   }
-  if (!process.env.ANTHROPIC_API_KEY) {
-    return Response.json({ error: 'ANTHROPIC_API_KEY is not configured.' }, { status: 500 });
+
+  const encoder = new TextEncoder();
+
+  // ── Helper: stream a plain string as SSE ──────────────────────────────────
+  function streamText(text) {
+    return new ReadableStream({
+      async start(controller) {
+        // Stream in small chunks so the UI feels live
+        const chunkSize = 80;
+        for (let i = 0; i < text.length; i += chunkSize) {
+          const chunk = text.slice(i, i + chunkSize);
+          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', text: chunk })}\n\n`));
+          // Small yield so the browser can render incrementally
+          await new Promise(r => setTimeout(r, 8));
+        }
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
+        controller.close();
+      },
+    });
   }
 
+  // ── If Groq API key is present, use Groq (better quality) ─────────────────
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const groqStream = await callGroq(product, url, contentType);
+      return new Response(groqStream, {
+        headers: {
+          'Content-Type': 'text/event-stream',
+          'Cache-Control': 'no-cache',
+          'Connection': 'keep-alive',
+        },
+      });
+    } catch (err) {
+      console.error('Groq error, falling back to templates:', err.message);
+      // Fall through to templates on Groq failure
+    }
+  }
+
+  // ── Fallback: Smart Templates (always works, no API key needed) ────────────
+  const content = generateTemplateContent(contentType, product, url);
+  return new Response(streamText(content), {
+    headers: {
+      'Content-Type': 'text/event-stream',
+      'Cache-Control': 'no-cache',
+      'Connection': 'keep-alive',
+    },
+  });
+}
+
+// ── Groq AI call (streaming) ─────────────────────────────────────────────────
+async function callGroq(product, url, contentType) {
   const ctx = `
 Product: ${product.productName}
 Category: ${product.category}
@@ -27,207 +74,84 @@ Product URL: ${url}
 Brand: Micron Aerosols | Made in India | Est. 1989 | "Global Standards. Imagined in India."`;
 
   const prompts = {
-    'seo-title-meta': `Generate SEO-optimized titles and meta descriptions for this product page.
-
-${ctx}
-
-Provide:
-1. THREE title tag options (50–60 characters each) — include primary keyword, brand name
-2. THREE meta description options (145–155 characters each) — include key benefit and CTA
-3. The recommended H1 heading for the product page
-4. Three H2 subheadings to use in the product description
-
-Format with clear labels. Prioritize keywords industrial buyers actually search.`,
-
-    'blog-post': `Write a comprehensive, SEO-optimized blog post / product guide for Micron Aerosols.
-
-${ctx}
-
-Write a complete article with these sections:
-## [Compelling Headline with primary keyword]
-**Introduction** — hook with the problem, preview the solution (100 words)
-## What is [Product Name]?
-## Key Features and Benefits (detailed bullet list)
-## How to Use [Product Name] — Step by Step
-## Industries and Applications
-## Why Choose Micron Aerosols?
-## Frequently Asked Questions (5 Q&As)
-## Conclusion + Call to Action
-
-Target length: 1200–1500 words. Use keywords naturally. Write for engineers and procurement managers searching Google. Emphasize Made in India and Global Standards quality.`,
-
-    'youtube-script': `Write a complete YouTube video script and all YouTube metadata.
-
-${ctx}
-
-Create:
-**VIDEO TITLE** (SEO-optimized, max 60 characters)
-**THUMBNAIL TEXT** (5 words max, shown on the thumbnail image)
-
-**SCRIPT** (4–5 minutes):
-- Hook (first 15 seconds — must grab attention immediately)
-- Introduction (who we are, what this product is)
-- Problem the product solves
-- Product demonstration narration (describe what to show on camera)
-- Key features walkthrough (mention each feature)
-- Real-world applications
-- Why Micron Aerosols (Made in India, 1989, global quality)
-- Call to action (visit website, subscribe, contact for bulk)
-
-**YOUTUBE DESCRIPTION** (500 words, SEO-rich, include product URL)
-**VIDEO CHAPTERS** (with timestamps)
-**20 YOUTUBE TAGS** (mix of broad and specific)`,
-
-    'instagram-content': `Create a complete Instagram content pack for this product.
-
-${ctx}
-
-Create:
-**5 INSTAGRAM FEED POST CAPTIONS** (different angles):
-Post 1 — Product Introduction
-Post 2 — Educational: How to use it
-Post 3 — Application spotlight
-Post 4 — Made in India pride
-Post 5 — Customer problem/solution
-
-Each caption: 150–200 words, include relevant emojis, strong CTA, end with 30 hashtags (mix popular + niche).
-
-**3 REEL IDEAS**:
-For each reel: Title | Concept | Shot list | Text overlays | Suggested audio type
-
-**INSTAGRAM BIO** (150 characters max)
-
-**5 STORY IDEAS** with interactive elements (polls, questions, countdowns)`,
-
-    'linkedin-posts': `Create LinkedIn content for this industrial product.
-
-${ctx}
-
-Create **5 LinkedIn posts** (one for each angle):
-1. Problem/Solution post
-2. Product feature spotlight
-3. Made in India manufacturing pride
-4. Customer success story (realistic but fictional)
-5. Industry insight / thought leadership
-
-Each post: 200–300 words, professional B2B tone, end with a question to drive comments. Include relevant hashtags.
-
-Then: **ONE LinkedIn Article outline** (800 words) about the industry challenge this product solves.
-
-**5 core LinkedIn hashtags** to always use.`,
-
-    'quora-answers': `Write detailed Quora answers for questions related to this product.
-
-${ctx}
-
-Write 5 complete Quora answer sets:
-
-For each:
-**QUESTION TO FIND ON QUORA:** [exact search phrase]
-**ANSWER:** (300–400 words, genuinely helpful expert advice, mention Micron Aerosols and the product as one good option — not as the only answer)
-
-Answers should read as real expert knowledge, not advertising. Include specific technical details that demonstrate expertise.`,
-
-    'indimart-listing': `Create a complete, optimized IndiaMART product listing.
-
-${ctx}
-
-Create:
-**PRODUCT TITLE** (100 characters max, keyword-optimized for IndiaMART search)
-**PRODUCT DESCRIPTION** (600–800 words, highly detailed technical description)
-**SPECIFICATIONS TABLE** (all technical specs in a clean table format)
-**10 KEY FEATURES** (bullet list)
-**APPLICATIONS LIST** (all use cases)
-**INDIAMART KEYWORDS** (comma-separated list of 20 keywords to add)
-**SUGGESTED CATEGORY PATH** on IndiaMART
-**5 LISTING FAQs** (Q&A format)
-
-Format everything ready to copy-paste directly into IndiaMART's product listing form.`,
-
-    'schema-markup': `Generate complete Schema.org structured data markup for this product page.
-
-${ctx}
-
-Generate these JSON-LD blocks (each in a separate code block):
-
-1. **Product Schema** — with all relevant properties (name, description, brand, manufacturer, url, offers, image)
-2. **FAQ Schema** — with 5 common questions about this product
-3. **HowTo Schema** — for how to use this product (5 steps)
-4. **BreadcrumbList Schema** — for the product page navigation
-5. **Organization Schema** — for Micron Aerosols (add to homepage only)
-
-Format as ready-to-use JSON-LD code blocks to paste into the website's <head> section.`,
-
-    'email-template': `Create email marketing templates for B2B outreach about this product.
-
-${ctx}
-
-Create:
-**1. COLD OUTREACH EMAIL**
-Subject line (A/B options) | Preview text | Body (200 words) | CTA button text
-
-**2. PRODUCT ANNOUNCEMENT EMAIL** (for existing customers)
-Subject line | Preview text | Body (300 words) | CTA
-
-**3. FOLLOW-UP EMAIL** (after an inquiry)
-Subject line | Body (150 words) | CTA
-
-**4. NEWSLETTER SECTION** (200 words, product spotlight format)
-
-For every email include: subject line, preview text, personalization placeholders [Company Name], [First Name].`,
+    'seo-title-meta': `Generate SEO-optimized title tags and meta descriptions for this Micron Aerosols product page.\n\n${ctx}\n\nProvide 3 title options (50-60 chars each), 3 meta description options (145-155 chars each), recommended H1, and 3 H2 subheadings. Format clearly with labels.`,
+    'blog-post': `Write a comprehensive 1200-1500 word SEO blog post / product guide for Micron Aerosols.\n\n${ctx}\n\nInclude: headline, introduction, what is the product, key features, how to use (step by step), applications, why choose Micron Aerosols, FAQ (5 Q&As), conclusion with CTA. Use ## headings and bullet points. Emphasize Made in India and global quality standards.`,
+    'youtube-script': `Write a complete 4-5 minute YouTube video script with all YouTube metadata.\n\n${ctx}\n\nInclude: 2 title options, thumbnail text, full script with timestamps, YouTube description (500 words), video chapters, and 20 tags.`,
+    'instagram-content': `Create a complete Instagram content pack.\n\n${ctx}\n\nCreate: 5 feed post captions (150-200 words each with 30 hashtags), 3 reel ideas with shot lists, Instagram bio (150 chars), 5 story ideas with interactive elements.`,
+    'linkedin-posts': `Create LinkedIn content for this B2B industrial product.\n\n${ctx}\n\nCreate: 5 LinkedIn posts (Problem/Solution, Feature spotlight, Made in India pride, Customer success story, Industry insight). 200-300 words each, end with a question. Plus a LinkedIn article outline and 5 core hashtags.`,
+    'quora-answers': `Write 5 detailed Quora answers for questions related to this product.\n\n${ctx}\n\nFor each: suggest the exact Quora question to find, then write a 300-400 word genuine expert answer that mentions Micron Aerosols naturally (not as advertising). Technical detail builds credibility.`,
+    'indimart-listing': `Create a complete optimised IndiaMART product listing.\n\n${ctx}\n\nCreate: optimised product title, 600-800 word description, specifications table, 10 key features, application list, 20 search keywords, suggested category path, and 5 listing FAQs. Format ready to copy-paste into IndiaMART.`,
+    'schema-markup': `Generate complete Schema.org JSON-LD structured data for this product page.\n\n${ctx}\n\nCreate: Product schema, FAQ schema (5 Q&As), HowTo schema (5 steps), BreadcrumbList schema, and Organization schema for Micron Aerosols. Format as ready-to-use <script> code blocks.`,
+    'email-template': `Create B2B email marketing templates for this product.\n\n${ctx}\n\nCreate: cold outreach email (with A/B subject lines), product announcement email for existing customers, follow-up email after inquiry, newsletter product spotlight section. Include subject lines, preview text, and full bodies.`,
   };
 
-  const prompt = prompts[contentType] || `Generate comprehensive digital marketing content for: ${contentType}\n\n${ctx}`;
+  const prompt = prompts[contentType] || `Generate digital marketing content for: ${contentType}\n\n${ctx}`;
 
-  try {
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+  const encoder = new TextEncoder();
 
-    const encoder = new TextEncoder();
-    const stream = new ReadableStream({
-      async start(controller) {
-        try {
-          const stream = client.messages.stream({
-            model: 'claude-haiku-4-5-20251001',
+  return new ReadableStream({
+    async start(controller) {
+      try {
+        const res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model: 'llama-3.3-70b-versatile',
             max_tokens: 4000,
-            system: `You are a senior digital marketing expert specializing in Indian B2B industrial products.
-Create content that ranks on Google, gets cited by AI tools (Gemini, ChatGPT, Perplexity), and converts industrial buyers.
-Always write content that is:
-- Technically accurate and credible
-- Keyword-optimized without being spammy
-- Formatted with headers (##), bullets, numbered lists
-- Ready to use immediately (copy-paste ready)
-- Proud of "Made in India" while emphasizing global quality standards`,
-            messages: [{ role: 'user', content: prompt }],
-          });
+            stream: true,
+            messages: [
+              {
+                role: 'system',
+                content: `You are a senior digital marketing expert specialising in Indian B2B industrial products.
+Create content that ranks on Google, gets cited by AI tools, and converts industrial buyers.
+Always write content that is: technically accurate, keyword-optimised, formatted with headers/bullets, copy-paste ready, and proud of Made in India quality.`,
+              },
+              { role: 'user', content: prompt },
+            ],
+          }),
+        });
 
-          stream.on('text', (text) => {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', text })}\n\n`));
-          });
-
-          stream.on('finalMessage', () => {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
-            controller.close();
-          });
-
-          stream.on('error', (err) => {
-            controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
-            controller.close();
-          });
-        } catch (err) {
-          controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
-          controller.close();
+        if (!res.ok) {
+          const err = await res.text();
+          throw new Error(`Groq API error: ${err}`);
         }
-      },
-    });
 
-    return new Response(stream, {
-      headers: {
-        'Content-Type': 'text/event-stream',
-        'Cache-Control': 'no-cache',
-        'Connection': 'keep-alive',
-      },
-    });
-  } catch (error) {
-    return Response.json({ error: error.message }, { status: 500 });
-  }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+
+          const lines = decoder.decode(value).split('\n');
+          for (const line of lines) {
+            if (!line.startsWith('data: ')) continue;
+            const data = line.slice(6);
+            if (data === '[DONE]') {
+              controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
+              controller.close();
+              return;
+            }
+            try {
+              const parsed = JSON.parse(data);
+              const text = parsed.choices?.[0]?.delta?.content;
+              if (text) {
+                controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'chunk', text })}\n\n`));
+              }
+            } catch { /* skip malformed lines */ }
+          }
+        }
+
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'done' })}\n\n`));
+        controller.close();
+      } catch (err) {
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'error', error: err.message })}\n\n`));
+        controller.close();
+        throw err; // propagate so caller can fall back to templates
+      }
+    },
+  });
 }
